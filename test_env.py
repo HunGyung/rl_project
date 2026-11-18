@@ -43,6 +43,32 @@ class EnvironmentTests(unittest.TestCase):
         changed[1:] = [(d, x * 100) for d, x in changed[1:]]
         a, b = ESSEnv({1: self.rows}, self.cfg, 120), ESSEnv({1: changed}, self.cfg, 120)
         np.testing.assert_array_equal(a.reset(1), b.reset(1))
+        state_a, _, _, _ = a.step(2)
+        state_b, _, _, _ = b.step(2)
+        np.testing.assert_array_equal(state_a, state_b)
+        self.assertAlmostEqual(state_a[14], 100 / 120)  # 01시에 관측하는 직전 사용량
+        self.assertAlmostEqual(state_a[18], 100 / 120)  # 오늘 완료 구간 평균
+
+    def test_month_start_does_not_reveal_first_hour(self):
+        changed = [(d, x * 100) for d, x in self.rows]
+        a, b = ESSEnv({1: self.rows}, self.cfg, 120), ESSEnv({1: changed}, self.cfg, 120)
+        initial = a.reset(1)
+        np.testing.assert_array_equal(initial, b.reset(1))
+        np.testing.assert_array_equal(initial[14:19], np.zeros(5))
+
+    def test_peak_defense_request_uses_previous_hour(self):
+        date = datetime(2012, 1, 2, 0)
+        a = ESSEnv({1: [(date, 100), (date + timedelta(hours=1), 110)]}, self.cfg, 120)
+        b = ESSEnv({1: [(date, 100), (date + timedelta(hours=1), 2)]}, self.cfg, 120)
+        for env in (a, b):
+            env.reset(1)
+            env.step(2)
+        _, _, _, info_a = a.step(5)
+        _, _, _, info_b = b.step(5)
+        self.assertEqual(info_a["requested_kw"], -a.power)
+        self.assertEqual(info_a["requested_kw"], info_b["requested_kw"])
+        self.assertGreater(info_a["discharge_kw"], info_b["discharge_kw"])
+        self.assertEqual(info_b["grid_kw"], 0)
 
     def test_no_battery_action_zero_savings_without_self_discharge(self):
         self.cfg["self_discharge_per_day"] = 0

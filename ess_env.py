@@ -57,17 +57,19 @@ class ESSEnv:
     def observation(self):
         if self.i == len(self.rows):
             return np.zeros(22, dtype=np.float32)
-        date, load = self.rows[self.i]
+        date = self.rows[self.i][0]
         price, band, season = tariff(date, self.cfg)
-        # 월초의 없는 이력은 첫 관측값으로 채운다. 미래 부하는 쓰지 않는다.
-        past = [self.rows[max(0, self.i - k)][1] / self.scale for k in (1, 2, 3)]
+        # t시에 끝난 구간만 관측한다. 월초에 없는 이력은 0으로 채운다.
+        recent = [self.rows[self.i - k][1] / self.scale if self.i >= k else 0.0
+                  for k in range(1, 5)]
         day_start = self.i - date.hour
-        day_mean = np.mean([r[1] for r in self.rows[day_start:self.i + 1]]) / self.scale
+        completed_today = self.rows[day_start:self.i]
+        day_mean = float(np.mean([r[1] for r in completed_today])) / self.scale if completed_today else 0.0
         state = [math.sin(2 * math.pi * date.hour / 24), math.cos(2 * math.pi * date.hour / 24)]
         state += [float(date.weekday() == k) for k in range(7)]
         state += [float(season == k) for k in range(3)]
-        state += [(len(self.rows) - self.i) / 744, float(band > 0), load / self.scale]
-        state += past + [day_mean, self.peak / self.scale, self.energy / self.capacity, price / self.price_scale]
+        state += [(len(self.rows) - self.i) / 744, float(band > 0), *recent]
+        state += [day_mean, self.peak / self.scale, self.energy / self.capacity, price / self.price_scale]
         return np.array(state, dtype=np.float32)
 
     def step(self, action):
@@ -76,15 +78,18 @@ class ESSEnv:
         if action not in range(6):
             raise ValueError("Action must be in 0..5")
         c = self.cfg
-        date, load = self.rows[self.i]
+        date = self.rows[self.i][0]
         price, band, _ = tariff(date, c)
         measured = band > 0
+        forecast = self.rows[self.i - 1][1] if self.i > 0 else 0.0
+        request = [self.power, self.power / 2, 0, -self.power / 2, -self.power,
+                   -min(self.power, max(0, forecast - self.peak))][action]
+        # 요청 결정 후 실측으로 수전과 요금을 계산한다. 역송 방지 한도는 실행에만 적용한다.
+        load = self.rows[self.i][1]
         before = self.energy
         # 최소 SoC는 사용 가능 영역의 하한으로 유지한다.
         self.energy = max(c["soc_min"] * self.capacity,
                           self.energy * (1 - c["self_discharge_per_day"]) ** (1 / 24))
-        request = [self.power, self.power / 2, 0, -self.power / 2, -self.power,
-                   -min(self.power, max(0, load - self.peak))][action]
         if request >= 0:
             charge = min(request, self.power, max(0, (c["soc_max"] * self.capacity - self.energy) / self.eta))
             discharge = 0.0

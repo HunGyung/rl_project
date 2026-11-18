@@ -38,7 +38,7 @@ def evaluate(env, model, policies=("rule_tou", "rule_peak", "rl"), collect_trace
                 elif policy == "rule_tou":
                     action = 4 if band == 2 else 2
                 else:
-                    action = 5  # 당월 피크 방어. 발표의 작년 피크 적응형과는 다르다.
+                    action = 5  # 직전 완료 구간 부하로 이번 시간 피크 위험을 추정한다.
                 state, _, done, _ = env.step(action)
             summaries.append(dict(policy=policy, month=month, **env.summary()))
             if collect_traces:
@@ -117,6 +117,8 @@ def main():
                     power_kw=maximum * cfg["power_fraction"],
                     capacity_kwh=maximum * cfg["power_fraction"] * cfg["duration_hours"],
                     data_sha256=data_hash, replay_mode="uniform", n_step=1,
+                    observation_timing="hour_start_completed_intervals_only",
+                    peak_defense_forecast="previous_completed_interval",
                     python=platform.python_version(), numpy=np.__version__, torch=torch.__version__,
                     purpose="First practice only; no 2014 evaluation; no CAPEX/NPV conclusion")
     (out / "settings.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
