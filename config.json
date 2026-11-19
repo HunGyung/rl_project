@@ -22,6 +22,8 @@
   "warmup_steps": 1000,
   "train_every": 4,
   "tau": 0.005,
+  "forecaster": "qr",
+  "forecaster_tau": 0.95,
   "tariff_status": "TEAM_2021_SCENARIO: supplied rates and calendar; current-month demand and assumed 30% floor",
   "rates": {
     "summer": [

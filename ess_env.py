@@ -36,8 +36,12 @@ def load_year(path, year):
 
 
 class ESSEnv:
-    def __init__(self, months, cfg, train_max):
+    def __init__(self, months, cfg, train_max, forecaster=None):
         self.months, self.cfg, self.scale = months, cfg, float(train_max)
+        # forecaster가 없으면 직전 완료 구간 값을 예측으로 쓴다(기존 동작, 상태 22차원).
+        # 있으면 이번 구간 τ 분위수 예측을 상태 끝에 붙이고(23차원) 피크 방어 요청량에도 쓴다.
+        self.forecaster = forecaster
+        self.obs_dim = 22 + (forecaster is not None)
         self.power = self.scale * cfg["power_fraction"]
         self.capacity = self.power * cfg["duration_hours"]
         if self.power <= 0 or self.capacity <= 0:
@@ -56,7 +60,7 @@ class ESSEnv:
 
     def observation(self):
         if self.i == len(self.rows):
-            return np.zeros(22, dtype=np.float32)
+            return np.zeros(self.obs_dim, dtype=np.float32)
         date = self.rows[self.i][0]
         price, band, season = tariff(date, self.cfg)
         # t시에 끝난 구간만 관측한다. 월초에 없는 이력은 0으로 채운다.
@@ -70,7 +74,15 @@ class ESSEnv:
         state += [float(season == k) for k in range(3)]
         state += [(len(self.rows) - self.i) / 744, float(band > 0), *recent]
         state += [day_mean, self.peak / self.scale, self.energy / self.capacity, price / self.price_scale]
+        if self.forecaster is not None:
+            state.append(self.forecast() / self.scale)
         return np.array(state, dtype=np.float32)
+
+    def forecast(self):
+        """이번 구간 사용량 예측. t시 시작 시점에 완료된 구간과 달력만 쓴다."""
+        if self.forecaster is not None:
+            return self.forecaster.predict(self.rows, self.i)
+        return self.rows[self.i - 1][1] if self.i > 0 else 0.0
 
     def step(self, action):
         if self.i >= len(self.rows):
@@ -81,7 +93,7 @@ class ESSEnv:
         date = self.rows[self.i][0]
         price, band, _ = tariff(date, c)
         measured = band > 0
-        forecast = self.rows[self.i - 1][1] if self.i > 0 else 0.0
+        forecast = self.forecast()
         request = [self.power, self.power / 2, 0, -self.power / 2, -self.power,
                    -min(self.power, max(0, forecast - self.peak))][action]
         # 요청 결정 후 실측으로 수전과 요금을 계산한다. 역송 방지 한도는 실행에만 적용한다.

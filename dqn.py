@@ -8,9 +8,9 @@ from torch import nn
 
 
 class DuelingQ(nn.Module):
-    def __init__(self):
+    def __init__(self, n_inputs=22):
         super().__init__()
-        self.features = nn.Sequential(nn.Linear(22, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU())
+        self.features = nn.Sequential(nn.Linear(n_inputs, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU())
         self.value = nn.Linear(128, 1)
         self.advantage = nn.Linear(128, 6)
 
@@ -31,7 +31,7 @@ def train(env, cfg, episodes, seed, on_episode=None):
     torch.manual_seed(seed)
     torch.set_num_threads(1)
     torch.use_deterministic_algorithms(True)
-    online, target = DuelingQ(), DuelingQ()
+    online, target = DuelingQ(env.obs_dim), DuelingQ(env.obs_dim)
     target.load_state_dict(online.state_dict())
     optimizer = torch.optim.Adam(online.parameters(), lr=cfg["learning_rate"])
     replay = deque(maxlen=cfg["replay_capacity"])

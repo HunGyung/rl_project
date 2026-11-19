@@ -12,6 +12,7 @@ import torch
 
 from ess_env import ESSEnv, load_year, tariff
 from dqn import train, greedy, DuelingQ
+from forecaster import QuantileForecaster
 
 ROOT = Path(__file__).resolve().parent
 
@@ -95,6 +96,8 @@ def main():
     parser.add_argument("--data", type=Path, default=ROOT / "data/factory_A_hourly_kwh_v3.csv")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--eval-every", type=int, default=12)
+    parser.add_argument("--forecaster", choices=["qr", "previous"], default=None,
+                        help="이번 구간 예측: qr = 2012로 학습한 분위수 회귀 q_τ, previous = 직전 완료 구간 값 (기본: config.json)")
     args = parser.parse_args()
     if args.episodes < 1:
         parser.error("--episodes must be positive")
@@ -110,6 +113,11 @@ def main():
     training = load_year(data, cfg["train_year"])
     validation = load_year(data, cfg["validation_year"])
     maximum = max(x for rows in training.values() for _, x in rows)
+    kind = args.forecaster or cfg.get("forecaster", "previous")
+    fc = QuantileForecaster(training, cfg, cfg.get("forecaster_tau", 0.95)) if kind == "qr" else None
+    if fc is not None:
+        print(f"Forecaster: QR tau={fc.tau} train coverage={fc.report['train_coverage']:.3f} "
+              f"weights={[round(float(w), 4) for w in fc.w]}", flush=True)
     out = args.output or ROOT / "outputs" / datetime.now().strftime(f"%Y%m%d_%H%M%S_{cfg['factory']}_seed{args.seed}")
     out.mkdir(parents=True, exist_ok=False)
     metadata = dict(config=cfg, seed=args.seed, episodes=args.episodes, eval_every=args.eval_every,
@@ -118,20 +126,21 @@ def main():
                     capacity_kwh=maximum * cfg["power_fraction"] * cfg["duration_hours"],
                     data_sha256=data_hash, replay_mode="uniform", n_step=1,
                     observation_timing="hour_start_completed_intervals_only",
-                    peak_defense_forecast="previous_completed_interval",
+                    peak_defense_forecast=(f"quantile_regression_q{fc.tau}_train_only" if fc else "previous_completed_interval"),
+                    forecaster=(fc.report if fc else None),
                     python=platform.python_version(), numpy=np.__version__, torch=torch.__version__,
                     purpose="First practice only; no 2014 evaluation; no CAPEX/NPV conclusion")
     (out / "settings.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Output: {out}\nWARNING: {cfg['tariff_status']}", flush=True)
-    checkpoint = BestCheckpoint(ESSEnv(validation, cfg, maximum), out, args.eval_every, args.episodes)
-    model, logs = train(ESSEnv(training, cfg, maximum), cfg, args.episodes, args.seed, checkpoint)
+    checkpoint = BestCheckpoint(ESSEnv(validation, cfg, maximum, fc), out, args.eval_every, args.episodes)
+    model, logs = train(ESSEnv(training, cfg, maximum, fc), cfg, args.episodes, args.seed, checkpoint)
     torch.save(model.state_dict(), out / "last_model.pt")
-    last_summaries, _ = evaluate(ESSEnv(validation, cfg, maximum), model, policies=("rl",), collect_traces=False)
+    last_summaries, _ = evaluate(ESSEnv(validation, cfg, maximum, fc), model, policies=("rl",), collect_traces=False)
     write_csv(out / "last_validation_monthly.csv", last_summaries)
-    model = DuelingQ()
+    model = DuelingQ(22 + (fc is not None))
     model.load_state_dict(torch.load(out / "best_model.pt", map_location="cpu", weights_only=True))
     model.eval()
-    summaries, traces = evaluate(ESSEnv(validation, cfg, maximum), model)
+    summaries, traces = evaluate(ESSEnv(validation, cfg, maximum, fc), model)
     write_csv(out / "training.csv", logs)
     write_csv(out / "validation_monthly.csv", summaries)
     write_csv(out / "validation_hourly.csv", traces)

@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from ess_env import ESSEnv, tariff
+from forecaster import QuantileForecaster
 
 ROOT = Path(__file__).resolve().parent
 
@@ -69,6 +70,35 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(info_a["requested_kw"], info_b["requested_kw"])
         self.assertGreater(info_a["discharge_kw"], info_b["discharge_kw"])
         self.assertEqual(info_b["grid_kw"], 0)
+
+    def _forecaster(self):
+        months = {1: [(datetime(2012, 1, 1) + timedelta(hours=i), 100 + 30 * ((i % 24) in range(9, 18)) + i % 5)
+                      for i in range(744)]}
+        return QuantileForecaster(months, self.cfg, 0.95)
+
+    def test_forecaster_state_and_request_ignore_current_and_future_load(self):
+        fc = self._forecaster()
+        changed = deepcopy(self.rows)
+        changed[1:] = [(d, x * 100) for d, x in changed[1:]]
+        a, b = ESSEnv({1: self.rows}, self.cfg, 120, fc), ESSEnv({1: changed}, self.cfg, 120, fc)
+        sa, sb = a.reset(1), b.reset(1)
+        self.assertEqual(sa.shape, (23,))
+        np.testing.assert_array_equal(sa, sb)
+        state_a, _, _, info_a = a.step(5)
+        state_b, _, _, info_b = b.step(5)
+        np.testing.assert_array_equal(state_a, state_b)          # 01시 상태는 00시 구간까지만 본다
+        self.assertEqual(info_a["requested_kw"], info_b["requested_kw"])
+        self.assertAlmostEqual(state_a[22], fc.predict(self.rows, 1) / 120)
+
+    def test_forecaster_month_start_uses_profile_not_zero(self):
+        fc = self._forecaster()
+        pred = fc.predict(self.rows, 0)
+        self.assertGreater(pred, 50)                              # 월초에도 0 근처로 떨어지지 않는다
+        self.assertAlmostEqual(fc.predict(self.rows, 0), fc.predict([(self.rows[0][0], 1e9)], 0))
+
+    def test_forecaster_train_coverage_near_tau(self):
+        fc = self._forecaster()
+        self.assertAlmostEqual(fc.report["train_coverage"], 0.95, delta=0.03)
 
     def test_no_battery_action_zero_savings_without_self_discharge(self):
         self.cfg["self_discharge_per_day"] = 0
