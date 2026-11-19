@@ -22,7 +22,11 @@
   "warmup_steps": 1000,
   "train_every": 4,
   "tau": 0.005,
-  "tariff_status": "TEAM_2021_SCENARIO: supplied rates and calendar; current-month demand and assumed 30% floor",
+  "forecaster_tau": 0.95,
+  "per_alpha": 0.6,
+  "per_beta_start": 0.4,
+  "per_epsilon": 0.000001,
+  "tariff_status": "TEAM_2021_SCENARIO: supplied rates, rolling 12-month seasonal ratchet and assumed 30% floor",
   "rates": {
     "summer": [
       51.1,

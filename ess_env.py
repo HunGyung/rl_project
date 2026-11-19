@@ -35,6 +35,16 @@ def load_year(path, year):
             for month in range(1, 13)}
 
 
+def dispatch(request, load, energy, power, capacity, eta, cfg):
+    """자가방전과 물리 한도를 적용한 뒤 충전, 방전, 종료 에너지를 반환한다."""
+    lower = cfg["soc_min"] * capacity
+    upper = cfg["soc_max"] * capacity
+    energy = max(lower, energy * (1 - cfg["self_discharge_per_day"]) ** (1 / 24))
+    charge = min(max(0, request), power, max(0, (upper - energy) / eta))
+    discharge = min(max(0, -request), power, load, max(0, (energy - lower) * eta))
+    return charge, discharge, energy + charge * eta - discharge / eta
+
+
 class ESSEnv:
     def __init__(self, months, cfg, train_max):
         self.months, self.cfg, self.scale = months, cfg, float(train_max)
@@ -87,18 +97,9 @@ class ESSEnv:
         # 요청 결정 후 실측으로 수전과 요금을 계산한다. 역송 방지 한도는 실행에만 적용한다.
         load = self.rows[self.i][1]
         before = self.energy
-        # 최소 SoC는 사용 가능 영역의 하한으로 유지한다.
-        self.energy = max(c["soc_min"] * self.capacity,
-                          self.energy * (1 - c["self_discharge_per_day"]) ** (1 / 24))
-        if request >= 0:
-            charge = min(request, self.power, max(0, (c["soc_max"] * self.capacity - self.energy) / self.eta))
-            discharge = 0.0
-        else:
-            charge = 0.0
-            discharge = min(-request, self.power, load, max(0, (self.energy - c["soc_min"] * self.capacity) * self.eta))
+        charge, discharge, self.energy = dispatch(request, load, self.energy, self.power, self.capacity, self.eta, c)
         actual = charge - discharge
         clipped = abs(request - actual)
-        self.energy += charge * self.eta - discharge / self.eta
         grid = load + actual
         base_increase = max(0, load - self.base_peak) if measured else 0
         increase = max(0, grid - self.peak) if measured else 0

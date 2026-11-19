@@ -1,18 +1,18 @@
 """Dueling: V와 A를 분리. Double: 행동 선택과 목표값 평가를 분리."""
 import random
-from collections import deque
 
 import numpy as np
 import torch
 from torch import nn
+from replay import PrioritizedReplay
 
 
 class DuelingQ(nn.Module):
-    def __init__(self):
+    def __init__(self, obs_dim=22, n_actions=6):
         super().__init__()
-        self.features = nn.Sequential(nn.Linear(22, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU())
+        self.features = nn.Sequential(nn.Linear(obs_dim, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU())
         self.value = nn.Linear(128, 1)
-        self.advantage = nn.Linear(128, 6)
+        self.advantage = nn.Linear(128, n_actions)
 
     def forward(self, state):
         features = self.features(state)
@@ -20,9 +20,10 @@ class DuelingQ(nn.Module):
         return value + advantage - advantage.mean(dim=-1, keepdim=True)
 
 
-def greedy(model, state):
+def greedy(model, state, mask):
     with torch.no_grad():
-        return int(model(torch.from_numpy(state).unsqueeze(0)).argmax(dim=1).item())
+        q = model(torch.from_numpy(state).unsqueeze(0))[0]
+        return int(q.masked_fill(~torch.from_numpy(mask), -torch.inf).argmax().item())
 
 
 def train(env, cfg, episodes, seed, on_episode=None):
@@ -31,54 +32,65 @@ def train(env, cfg, episodes, seed, on_episode=None):
     torch.manual_seed(seed)
     torch.set_num_threads(1)
     torch.use_deterministic_algorithms(True)
-    online, target = DuelingQ(), DuelingQ()
+    online = DuelingQ(env.obs_dim, env.n_actions)
+    target = DuelingQ(env.obs_dim, env.n_actions)
     target.load_state_dict(online.state_dict())
     optimizer = torch.optim.Adam(online.parameters(), lr=cfg["learning_rate"])
-    replay = deque(maxlen=cfg["replay_capacity"])
+    replay = PrioritizedReplay(cfg["replay_capacity"], cfg["per_alpha"], cfg["per_epsilon"], seed)
     logs, steps = [], 0
-    # 12회당 모든 달을 한 번씩 학습. 월 내부 시간 순서는 유지한다.
-    month_order = []
-    decay_steps = max(1, episodes * 730 * 0.8)
+    total_steps = len(env.rows) * episodes
+    decay_steps = max(1, total_steps * 0.8)
     for episode in range(episodes):
-        if not month_order:
-            month_order = random.sample(list(env.months), len(env.months))
-        month = month_order.pop()
-        state, done, losses = env.reset(month), False, []
+        state, done, losses = env.reset(), False, []
+        mask = env.action_mask()
+        upper_masked_hours = lower_masked_hours = 0
         while not done:
             epsilon = max(0.05, 1 - 0.95 * steps / decay_steps)
-            action = random.randrange(6) if random.random() < epsilon else greedy(online, state)
+            upper_masked_hours += int(not mask[0])
+            lower_masked_hours += int(not mask[4])
+            if random.random() < epsilon:
+                action = int(random.choice(np.flatnonzero(mask)))
+            else:
+                action = greedy(online, state, mask)
             next_state, reward, done, _ = env.step(action)
-            replay.append((state, action, reward, next_state, done))
-            state = next_state
+            next_mask = env.action_mask()
+            replay.append((state, action, reward, next_state, done, next_mask))
+            state, mask = next_state, next_mask
             steps += 1
             if steps >= cfg["warmup_steps"] and len(replay) >= cfg["batch_size"] and steps % cfg["train_every"] == 0:
-                batch = random.sample(replay, cfg["batch_size"])
-                s, a, r, ns, done_flags = zip(*batch)
+                beta = cfg["per_beta_start"] + (1 - cfg["per_beta_start"]) * steps / total_steps
+                batch, indices, weights = replay.sample(cfg["batch_size"], beta)
+                s, a, r, ns, done_flags, masks = zip(*batch)
                 s = torch.tensor(np.array(s), dtype=torch.float32)
                 ns = torch.tensor(np.array(ns), dtype=torch.float32)
                 a = torch.tensor(a, dtype=torch.int64).unsqueeze(1)
                 r = torch.tensor(r, dtype=torch.float32)
                 not_done = 1 - torch.tensor(done_flags, dtype=torch.float32)
+                valid_actions = torch.as_tensor(np.asarray(masks), dtype=torch.bool)
                 prediction = online(s).gather(1, a).squeeze(1)
                 with torch.no_grad():
                     # Double DQN: online에서 argmax, target에서 해당 Q값 평가.
-                    next_action = online(ns).argmax(dim=1, keepdim=True)
+                    next_action = online(ns).masked_fill(~valid_actions, -torch.inf).argmax(dim=1, keepdim=True)
                     next_q = target(ns).gather(1, next_action).squeeze(1)
                     expected = r + cfg["gamma"] * not_done * next_q
-                loss = nn.functional.smooth_l1_loss(prediction, expected)
+                td_error = (expected - prediction).detach().numpy()
+                per_item = nn.functional.smooth_l1_loss(prediction, expected, reduction="none")
+                loss = (torch.from_numpy(weights) * per_item).mean()
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(online.parameters(), 10.0)
                 optimizer.step()
+                replay.update(indices, td_error)
                 with torch.no_grad():
                     for slow, fast in zip(target.parameters(), online.parameters()):
                         slow.lerp_(fast, cfg["tau"])
                 losses.append(float(loss.item()))
         summary = env.summary()
-        logs.append(dict(episode=episode + 1, month=month, steps=steps, epsilon=epsilon,
+        logs.append(dict(episode=episode + 1, steps=steps, epsilon=epsilon,
+                         upper_masked_hours=upper_masked_hours, lower_masked_hours=lower_masked_hours,
                          mean_loss=float(np.mean(losses)) if losses else None, **summary))
-        print(f"episode={episode + 1}/{episodes} month={month:02d} steps={steps} "
-              f"reward={summary['reward_sum_won']:,.0f} KRW epsilon={epsilon:.3f}", flush=True)
+        print(f"TRAIN episode={episode + 1}/{episodes} steps={steps} "
+              f"net={summary['net_saving_won']:,.0f} KRW epsilon={epsilon:.3f}", flush=True)
         if on_episode is not None:
             on_episode(online, episode + 1, logs)
     return online.eval(), logs
