@@ -35,8 +35,9 @@ POWER_PERCENTAGES = (3, 5, 7)
 DURATIONS_HOURS = (1, 2, 4)
 SIZE_BASE_YEAR = 2012          # 출력 비율 · 계약전력의 기준 연도 (두 단계 모두 같은 설비)
 STAGES = {
-    "develop": dict(train_years=(2012,), evaluate_year=2013, label="validation"),
-    "final": dict(train_years=(2012, 2013), evaluate_year=2014, label="test"),
+    # episodes: 월 단위 에피소드 기본값. 두 단계 모두 학습 데이터를 20번 반복한다 (README "에피소드 수 결정").
+    "develop": dict(train_years=(2012,), evaluate_year=2013, label="validation", episodes=240),
+    "final": dict(train_years=(2012, 2013), evaluate_year=2014, label="test", episodes=480),
 }
 WARMUP_PASSES = 2
 PERCENTILE_RULE = dict(lookback_days=7, quantile=0.95, min_days=3)
@@ -215,8 +216,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--stage", choices=tuple(STAGES), default="develop")
     parser.add_argument("--factory", choices=("A", "B", "C"), default="A")
-    parser.add_argument("--episodes", type=int, default=12,
-                        help="Monthly episodes per ESS size (develop: 12 = one pass over 2012; final: 24 = one pass over 2012-2013)")
+    parser.add_argument("--episodes", type=int,
+                        help="Monthly episodes per ESS size (default: develop 240 = 20 passes over 2012; "
+                             "final 480 = 20 passes over 2012-2013)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--data", type=Path)
     parser.add_argument("--output", type=Path)
@@ -227,6 +229,8 @@ def main():
                         help="Sensitivity: cycles at 80%% DoD to end of life (default config.json 3000; "
                              "PNNL 60%% end of life: 6000)")
     args = parser.parse_args()
+    if args.episodes is None:
+        args.episodes = STAGES[args.stage]["episodes"]
     if args.episodes < 1:
         parser.error("--episodes must be positive")
     if args.eval_every < 1:
