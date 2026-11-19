@@ -35,6 +35,29 @@ class EconomicsTests(unittest.TestCase):
         pv -= u["recycle"] * 200 * eco.USD_TO_KRW / 1.05 ** 15
         self.assertAlmostEqual(result["breakeven_ratio"], pv / cap, places=9)
 
+    def test_first_year_saving_only_changes_year_one(self):
+        size = eco.Size(100.0, 200.0)
+        steady = eco.economics(size, 5e6, 0.0)
+        first = eco.economics(size, 5e6, 0.0, first_year_bill_saving_krw=2e6)
+        self.assertAlmostEqual(steady["pv_net_flows_krw"] - first["pv_net_flows_krw"], 3e6 / 1.05)
+        self.assertEqual(steady["simple_payback_yr"], first["simple_payback_yr"])
+
+    def test_case_rows_use_year1_then_steady(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = Path(tmp) / "p05_h2"
+            case.mkdir()
+            settings = dict(power_kw=378.0, capacity_kwh=756.0, config=dict(round_trip_efficiency=0.83))
+            (case / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+            with (case / "test_annual.csv").open("w", encoding="utf-8-sig", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=["scenario", "policy", "bill_saving_won", "net_saving_won", "discharge_kwh"])
+                w.writeheader()
+                w.writerow(dict(scenario="year1", policy="rl", bill_saving_won=1e7, net_saving_won=0.9e7, discharge_kwh=5000))
+                w.writerow(dict(scenario="steady", policy="rl", bill_saving_won=2e7, net_saving_won=1.9e7, discharge_kwh=6000))
+            rows = case_rows(case)
+            expected = eco.economics(eco.Size(378.0, 756.0), 2e7, 6000 / math.sqrt(0.83), first_year_bill_saving_krw=1e7)
+            self.assertAlmostEqual(rows[0]["breakeven_ratio"], round(expected["breakeven_ratio"], 4))
+            self.assertEqual((rows[0]["year1_bill_saving_won"], rows[0]["bill_saving_won"]), (10_000_000, 20_000_000))
+
     def test_case_rows_use_bill_saving_and_nominal_capacity(self):
         with tempfile.TemporaryDirectory() as tmp:
             case = Path(tmp) / "p05_h2"

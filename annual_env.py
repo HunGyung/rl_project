@@ -13,7 +13,7 @@ class AnnualESSEnv:
     obs_dim = 50
     n_actions = 6
 
-    def __init__(self, months, cfg, train_max, forecasts, opening_history=None):
+    def __init__(self, months, cfg, train_max, forecasts, opening_history=None, ess_opening_history=None):
         self.rows = tuple(row for month in sorted(months) for row in months[month])
         self.month_ends = tuple(accumulate(len(months[month]) for month in sorted(months)))
         if not self.rows or len(forecasts) != len(self.rows):
@@ -28,15 +28,36 @@ class AnnualESSEnv:
         self.floor = self.scale * cfg["contract_multiplier"] * cfg["demand_floor_fraction"]
         self.price_scale = max(max(rates) for rates in cfg["rates"].values()) + cfg["surcharge_per_kwh"]
         self.tariffs = tuple(tariff(date, cfg) for date, _ in self.rows)
-        first_month = month_index(self.rows[0][0])
-        self.opening_history = {m: p for m, p in (opening_history or {}).items()
-                                if first_month - 11 <= m < first_month}
+        self.first_month = month_index(self.rows[0][0])
+        # 이력을 '직전 해'로 옮길 때 달력 월(래칫 대상 월)이 맞도록 12개월 단위로 민다.
+        self.shift_months = 12 * math.ceil(len(self.month_ends) / 12)
+        self.set_opening(opening_history, ess_opening_history)
+
+    def _window(self, history):
+        return {m: p for m, p in (history or {}).items() if self.first_month - 11 <= m < self.first_month}
+
+    def set_opening(self, base_history, ess_history=None):
+        """첫 달 직전 11개월의 월 피크. 원래 운영과 ESS 운영의 이력을 따로 줄 수 있다 (생략하면 같은 값)."""
+        self.base_opening = self._window(base_history)
+        self.ess_opening = self._window(base_history if ess_history is None else ess_history)
+
+    def as_previous_year(self, history):
+        """이 데이터 구간의 월 피크를 구간 바로 앞의 '직전 해' 이력으로 옮긴다."""
+        return {m - self.shift_months: p for m, p in history.items() if m >= self.first_month}
+
+    def ess_peaks(self):
+        """마지막 운전에서 ESS 운영이 남긴 월 피크 (이 데이터 구간의 달만)."""
+        return {m: p for m, p in self.ess_history.items() if m >= self.first_month}
+
+    def roll_over(self):
+        """다음 운전이 이번 운전의 피크 기록을 직전 해 이력으로 이어받는다 (같은 데이터를 해마다 반복 운영)."""
+        self.set_opening(self.as_previous_year(self.base_history), self.as_previous_year(self.ess_history))
 
     def reset(self):
         self.i = 0
         self.energy = self.capacity * self.cfg["initial_soc"]
-        self.base_history = dict(self.opening_history)
-        self.ess_history = dict(self.opening_history)
+        self.base_history = dict(self.base_opening)
+        self.ess_history = dict(self.ess_opening)
         self.history = []
         self._start_month()
         return self.observation()

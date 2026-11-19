@@ -94,4 +94,25 @@ class AnnualRatchetTests(unittest.TestCase):
                          [(1, 1, 1, 0), (1, 2, 2, 1), (2, 1, 3, 0)])
         self.assertEqual([r[4] for r in stored], [False, True, False])
         np.testing.assert_array_equal(stored[0][3], stored[1][0])
-        np.testing.assert_array_equal(stored[0][0], stored[2][0])
+        # 2회차는 1회차의 피크 기록을 직전 해 이력으로 이어받아 시작한다 (2월은 래칫 대상 월).
+        self.assertEqual(set(env.ess_opening), {month_index(datetime(2011, 2, 1))})
+        self.assertFalse(np.array_equal(stored[0][0], stored[2][0]))
+
+    def test_separate_ess_opening_history(self):
+        december = month_index(datetime(2011, 12, 1))
+        env = AnnualESSEnv(self.months, self.cfg, 120, [100, 50], {december: 150}, {december: 120})
+        env.reset()
+        self.assertEqual((env.base_peak, env.peak), (150, 120))
+
+    def test_roll_over_uses_own_peaks_as_previous_year(self):
+        env = self.env()
+        env.reset()
+        _, _, _, january = env.step(4)
+        _, _, done, february = env.step(2)
+        self.assertTrue(done)
+        env.roll_over()
+        previous_february = month_index(datetime(2011, 2, 1))
+        self.assertEqual(env.ess_opening, {previous_february: february["grid_kw"]})
+        self.assertEqual(env.base_opening, {previous_february: 50})
+        env.reset()
+        self.assertEqual(env.peak, max(env.floor, february["grid_kw"]))

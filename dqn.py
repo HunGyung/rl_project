@@ -47,11 +47,14 @@ def train(env, cfg, episodes, seed, on_episode=None):
     done = True
     for episode in range(episodes):
         if done:
+            if episode:
+                # 연말까지 돈 뒤 다시 시작할 때는 지난 회차의 피크 기록을 직전 해 이력으로 이어받는다.
+                env.roll_over()
             state = env.reset()
             mask = env.action_mask()
         pass_index, month_index = divmod(episode, months_per_pass)
         month_start = env.i
-        month = env.rows[month_start][0].month
+        year, month = env.rows[month_start][0].year, env.rows[month_start][0].month
         month_end = env.month_ends[month_index]
         losses = []
         upper_masked_hours = lower_masked_hours = 0
@@ -98,11 +101,11 @@ def train(env, cfg, episodes, seed, on_episode=None):
                         slow.lerp_(fast, cfg["tau"])
                 losses.append(float(loss.item()))
         summary = env.summary(start=month_start)
-        logs.append(dict(episode=episode + 1, training_pass=pass_index + 1, month=month,
+        logs.append(dict(episode=episode + 1, training_pass=pass_index + 1, year=year, month=month,
                          year_terminal=int(done), steps=steps, epsilon=epsilon,
                          upper_masked_hours=upper_masked_hours, lower_masked_hours=lower_masked_hours,
                          mean_loss=float(np.mean(losses)) if losses else None, **summary))
-        print(f"TRAIN episode={episode + 1}/{episodes} pass={pass_index + 1} month={month:02d} steps={steps} "
+        print(f"TRAIN episode={episode + 1}/{episodes} pass={pass_index + 1} {year}-{month:02d} steps={steps} "
               f"net={summary['net_saving_won']:,.0f} KRW epsilon={epsilon:.3f}", flush=True)
         if on_episode is not None:
             on_episode(online, episode + 1, logs)

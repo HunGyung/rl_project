@@ -105,9 +105,13 @@ def payback(cap: float, flows: list[float]) -> float | None:
 
 
 def economics(size: Size, annual_bill_saving_krw: float, annual_discharge_dc_kwh: float,
-              year: int = 2021, years: int = YEARS, discount: float = DISCOUNT, fx: float = USD_TO_KRW) -> dict:
+              year: int = 2021, years: int = YEARS, discount: float = DISCOUNT, fx: float = USD_TO_KRW,
+              first_year_bill_saving_krw: float | None = None) -> dict:
     """연간 요금 절감액(원)으로 15년 경제성을 계산한다.
 
+    annual_bill_saving_krw     : 2년차 이후(정상상태, steady) 연간 요금 절감 → 2~15년차
+    first_year_bill_saving_krw : 설치 첫해(year1) 요금 절감 → 1년차. 생략하면 정상상태 값을 쓴다.
+      첫해에는 설치 전 원래 운영의 피크가 래칫으로 남아 기본요금 절감이 줄어든다.
     현금흐름: 0년 −설치비 / 매년 +요금 절감 − 고정 O&M / 교체 연도 −교체비(저장 블록 + BOS) / 마지막 해 −폐기비
     본전 설치비율 = Σ 현금흐름 현재가치 ÷ 설치비 (1 이상이면 NPV 양수)
     손익분기 설치비 = Σ 현금흐름 현재가치 ÷ 명목 kWh ($/kWh) — 설치비가 이 값 이하면 본전"""
@@ -121,8 +125,9 @@ def economics(size: Size, annual_bill_saving_krw: float, annual_discharge_dc_kwh
         repl_years.append(math.ceil(n * life))
         n += 1
     flows = []
+    first = annual_bill_saving_krw if first_year_bill_saving_krw is None else first_year_bill_saving_krw
     for t in range(1, years + 1):
-        cf = annual_bill_saving_krw - fom - repl * repl_years.count(t)
+        cf = (first if t == 1 else annual_bill_saving_krw) - fom - repl * repl_years.count(t)
         if t == years:
             cf -= u["recycle"] * size.nominal_kwh * fx
         flows.append(cf)
@@ -131,5 +136,6 @@ def economics(size: Size, annual_bill_saving_krw: float, annual_discharge_dc_kwh
                 breakeven_ratio=pv / cap,
                 breakeven_capex_usd_per_kwh=pv / fx / size.nominal_kwh,
                 pnnl_capex_usd_per_kwh=cap / fx / size.nominal_kwh,
+                # 단순 회수기간은 정상상태 절감 기준
                 simple_payback_yr=cap / (annual_bill_saving_krw - fom) if annual_bill_saving_krw > fom else math.inf,
                 payback_yr=payback(cap, flows), battery_life_yr=life, replacement_years=repl_years)
