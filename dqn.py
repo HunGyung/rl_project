@@ -38,13 +38,25 @@ def train(env, cfg, episodes, seed, on_episode=None):
     optimizer = torch.optim.Adam(online.parameters(), lr=cfg["learning_rate"])
     replay = PrioritizedReplay(cfg["replay_capacity"], cfg["per_alpha"], cfg["per_epsilon"], seed)
     logs, steps = [], 0
-    total_steps = len(env.rows) * episodes
+    months_per_pass = len(env.month_ends)
+    full_passes, extra_months = divmod(episodes, months_per_pass)
+    total_steps = full_passes * len(env.rows)
+    if extra_months:
+        total_steps += env.month_ends[extra_months - 1]
     decay_steps = max(1, total_steps * 0.8)
+    done = True
     for episode in range(episodes):
-        state, done, losses = env.reset(), False, []
-        mask = env.action_mask()
+        if done:
+            state = env.reset()
+            mask = env.action_mask()
+        pass_index, month_index = divmod(episode, months_per_pass)
+        month_start = env.i
+        month = env.rows[month_start][0].month
+        month_end = env.month_ends[month_index]
+        losses = []
         upper_masked_hours = lower_masked_hours = 0
-        while not done:
+        # 월말은 로그 경계이다. 실제 종료 여부는 환경이 연말에만 돌려준다.
+        while env.i < month_end:
             epsilon = max(0.05, 1 - 0.95 * steps / decay_steps)
             upper_masked_hours += int(not mask[0])
             lower_masked_hours += int(not mask[4])
@@ -85,11 +97,12 @@ def train(env, cfg, episodes, seed, on_episode=None):
                     for slow, fast in zip(target.parameters(), online.parameters()):
                         slow.lerp_(fast, cfg["tau"])
                 losses.append(float(loss.item()))
-        summary = env.summary()
-        logs.append(dict(episode=episode + 1, steps=steps, epsilon=epsilon,
+        summary = env.summary(start=month_start)
+        logs.append(dict(episode=episode + 1, training_pass=pass_index + 1, month=month,
+                         year_terminal=int(done), steps=steps, epsilon=epsilon,
                          upper_masked_hours=upper_masked_hours, lower_masked_hours=lower_masked_hours,
                          mean_loss=float(np.mean(losses)) if losses else None, **summary))
-        print(f"TRAIN episode={episode + 1}/{episodes} steps={steps} "
+        print(f"TRAIN episode={episode + 1}/{episodes} pass={pass_index + 1} month={month:02d} steps={steps} "
               f"net={summary['net_saving_won']:,.0f} KRW epsilon={epsilon:.3f}", flush=True)
         if on_episode is not None:
             on_episode(online, episode + 1, logs)

@@ -2,10 +2,12 @@ import json
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from annual_env import AnnualESSEnv
+from dqn import train
 from forecaster import QuantileForecaster
 from run import forecasts_for_year
 from tariff_engine import month_index, ratchet_history
@@ -82,3 +84,14 @@ class AnnualRatchetTests(unittest.TestCase):
         env.reset()
         _, _, _, default = env.step(5)
         self.assertEqual(default["requested_kw"], -env.power)
+
+    def test_training_counts_months_but_only_terminates_at_end_of_data(self):
+        env = self.env()
+        with patch("dqn.PrioritizedReplay") as replay_factory:
+            _, logs = train(env, self.cfg, episodes=3, seed=0)
+        stored = [call.args[0] for call in replay_factory.return_value.append.call_args_list]
+        self.assertEqual([(r["training_pass"], r["month"], r["steps"], r["year_terminal"]) for r in logs],
+                         [(1, 1, 1, 0), (1, 2, 2, 1), (2, 1, 3, 0)])
+        self.assertEqual([r[4] for r in stored], [False, True, False])
+        np.testing.assert_array_equal(stored[0][3], stored[1][0])
+        np.testing.assert_array_equal(stored[0][0], stored[2][0])

@@ -1,5 +1,6 @@
 """연간 ESS 에피소드. 시간 시작에 결정하고, 월마다 래칫 기본요금을 정산한다."""
 from collections import defaultdict
+from itertools import accumulate
 import math
 
 import numpy as np
@@ -14,6 +15,7 @@ class AnnualESSEnv:
 
     def __init__(self, months, cfg, train_max, forecasts, opening_history=None):
         self.rows = tuple(row for month in sorted(months) for row in months[month])
+        self.month_ends = tuple(accumulate(len(months[month]) for month in sorted(months)))
         if not self.rows or len(forecasts) != len(self.rows):
             raise ValueError("Each hour requires a load and a forecast")
         self.forecasts = np.asarray(forecasts, dtype=float)
@@ -146,8 +148,8 @@ class AnnualESSEnv:
                      billing_peak_kw=rows[-1]["billing_peak_kw"], **self._summary(rows))
                 for month, rows in monthly.items()]
 
-    def summary(self):
-        return self._summary(self.history)
+    def summary(self, start=0):
+        return self._summary(self.history[start:])
 
     @staticmethod
     def _summary(rows):

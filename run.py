@@ -109,11 +109,11 @@ class BestCheckpoint:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--factory", choices=("A", "B", "C"), default="A")
-    parser.add_argument("--episodes", type=int, default=12, help="Annual episodes per ESS size")
+    parser.add_argument("--episodes", type=int, default=12, help="Monthly episodes per ESS size")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--data", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--eval-every", type=int, default=1)
+    parser.add_argument("--eval-every", type=int, default=12, help="Validate every N monthly episodes and at the end")
     parser.add_argument("--power-percent", type=int, choices=POWER_PERCENTAGES, help="Run only this output percentage")
     parser.add_argument("--duration-hours", type=int, choices=DURATIONS_HOURS, help="Run only this duration")
     args = parser.parse_args()
@@ -148,7 +148,8 @@ def main():
     out = args.output or ROOT / "outputs" / datetime.now().strftime(f"annual_{args.factory}_%Y%m%d_%H%M%S_seed{args.seed}")
     out.mkdir(parents=True, exist_ok=False)
     metadata = dict(factory=args.factory, grid=grid, seed=args.seed, episodes=args.episodes, eval_every=args.eval_every,
-                    episode_unit="calendar_year", selection_metric="2013 annual ratchet net saving, excluding CAPEX",
+                    episode_unit="calendar_month", terminal_boundary="end_of_calendar_year",
+                    selection_metric="2013 annual ratchet net saving, excluding CAPEX",
                     train_max_kw=maximum, data_sha256=data_hash, replay_mode="per", n_step=1,
                     observation_timing="hour_start_completed_intervals_only",
                     soc_mask="upper_charge_lower_discharge", forecaster=forecaster.report,
