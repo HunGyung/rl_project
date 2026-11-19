@@ -64,3 +64,29 @@ python -m venv .venv
 4. **차이의 원인 확인.** `validation_annual.csv`에서 `demand_saving_won`(기본요금 절감), `energy_saving_won`(전력량 관련 절감), `degradation_won`(열화비)을 확인합니다. `validation_monthly.csv`의 `month_peak_kw`와 `billing_peak_kw`가 다르면, 이월 피크 또는 계약전력 하한이 청구 기준에 영향을 준 달입니다. `validation_hourly.csv`에는 그때의 예측, 실제 방전, SoC가 기록됩니다.
 
 설비별 순절감은 2013년 **운영 성능**을 비교하는 값입니다. 투자비와 유지비를 포함한 경제성 순위는 별도로 계산합니다. 팀원끼리 결과를 대조할 때는 같은 공장·설비에서 설정, 시드, 데이터 해시가 일치하는지 각 실행의 `settings.json`으로 확인합니다.
+
+## 경제성 (설치비 · 유지비 · 본전 설치비율)
+
+학습과 운영은 그대로 두고, 실행이 끝난 폴더에 15년 경제성을 사후 계산으로 붙입니다. 다시 학습하지 않습니다.
+
+```
+.venv\Scripts\python add_economics.py outputs\annual_...
+```
+
+칸 폴더마다 `settings.json`의 출력·용량과 `validation_annual.csv`의 2013년 결과를 읽어 `grid_economics.csv`를 만듭니다. 콘솔에는 정책별 본전 설치비율 상위 3칸이 나옵니다.
+
+| 열 | 뜻 |
+|---|---|
+| `breakeven_ratio` | **본전 설치비율** = 15년 현금흐름 현재가치 ÷ 설치비. 1 이상이면 NPV 양수. 칸 사이 비교와 유망 칸 선택에 사용 |
+| `breakeven_capex_usd_per_kwh` | 손익분기 설치비. 설치비가 명목 kWh당 이 값 이하이면 본전 (`pnnl_capex_usd_per_kwh`와 비교) |
+| `capex_won`, `annual_om_won` | 설치비, 연간 고정 O&M |
+| `simple_payback_yr` | 단순 회수기간 = 설치비 ÷ (연 요금 절감 − O&M) |
+| `npv_won`, `battery_life_yr`, `equivalent_cycles` | 순현재가치, 교체 부분 수명, 연간 등가 충방전 횟수 |
+
+가정 (`economics.py`):
+
+- 설치비는 PNNL 2022 보고서의 LFP **1 MW** 시스템 2021년 항목별 단가를 kW·명목 kWh에 비례 적용합니다. 소형 설비 할증은 넣지 않아 설치비를 낮게 본 쪽입니다. 명목 지속시간 2·4·10h 사이를 선형 보간하고 2h 미만은 2h 단가를 씁니다.
+- 용량 `capacity_kwh`(= kW × 지속시간)는 **명목 용량**이고 실사용은 SoC 10~90%인 0.8배입니다.
+- 할인율 5%, 15년, 잔존가치 0, 환율 1,144.4원/$(2021 연평균). 사이클 2,400회(DoD 80%), 캘린더 16년. 교체는 수명이 15년 안에 끝날 때 그 해에만 넣습니다.
+- 절감액은 `bill_saving_won`(래칫 기준 요금 절감)을 씁니다. `net_saving_won`은 열화비를 이미 뺀 값이라, 설치비·교체비로 노화를 반영하는 경제성에 넣으면 노화를 두 번 빼게 됩니다.
+- 칸 **안**의 체크포인트 선택은 지금처럼 순절감으로 합니다(같은 칸은 설치비가 같음). 칸 **사이** 비교와 유망 칸 선택은 `breakeven_ratio`로 합니다.
