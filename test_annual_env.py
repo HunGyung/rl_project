@@ -41,6 +41,9 @@ class AnnualRatchetTests(unittest.TestCase):
         self.assertGreater(february["settlement_won"], 0)
         summary = env.summary()
         self.assertAlmostEqual(summary["reward_sum_won"], summary["net_saving_won"] - summary["penalty_won"])
+        # 열화비는 배터리에서 나간 DC 방전량 기준이다.
+        self.assertAlmostEqual(january["degradation_won"],
+                               env.degradation_per_dc_kwh * january["discharge_kw"] / env.eta)
 
     def test_rolling_window_expiry_and_seasonal_filter(self):
         history = {month_index(datetime(2012, m, 1)): p for m, p in ((7, 150), (8, 120), (10, 900))}

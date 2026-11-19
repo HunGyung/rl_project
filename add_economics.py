@@ -42,6 +42,8 @@ def case_rows(case_dir: Path) -> list[dict]:
     settings = json.loads((case_dir / "settings.json").read_text(encoding="utf-8"))
     size = eco.size_from_run(settings["power_kw"], settings["capacity_kwh"])
     rte = settings["config"]["round_trip_efficiency"]
+    cycle_life = settings["config"].get("cycle_life", eco.CYCLE_LIFE)
+    calendar_life = settings["config"].get("calendar_life_years", eco.CALENDAR_LIFE)
     by_policy = {}
     for r in read_csv(annual_file(case_dir)):
         if r["policy"] in POLICIES:
@@ -54,7 +56,8 @@ def case_rows(case_dir: Path) -> list[dict]:
         year1 = by_policy[policy].get("year1", steady)
         bill, bill1 = float(steady["bill_saving_won"]), float(year1["bill_saving_won"])
         dc = float(steady["discharge_kwh"]) / math.sqrt(rte)
-        e = eco.economics(size, bill, dc, first_year_bill_saving_krw=bill1)
+        e = eco.economics(size, bill, dc, first_year_bill_saving_krw=bill1,
+                          cycle_life=cycle_life, calendar_life=calendar_life)
         rows.append(dict(
             condition=case_dir.name, policy=policy,
             power_kw=round(size.power_kw, 1), nominal_kwh=round(size.nominal_kwh, 1),
@@ -62,7 +65,7 @@ def case_rows(case_dir: Path) -> list[dict]:
             capex_won=round(e["capex_krw"]), annual_om_won=round(e["annual_fixed_om_krw"]),
             year1_bill_saving_won=round(bill1), bill_saving_won=round(bill),
             net_saving_won=round(float(steady["net_saving_won"])),
-            equivalent_cycles=round(dc / (size.nominal_kwh * eco.DOD), 1),
+            cycle_life=cycle_life, equivalent_cycles=round(dc / (size.nominal_kwh * eco.DOD), 1),
             breakeven_ratio=round(e["breakeven_ratio"], 4), npv_won=round(e["npv_krw"]),
             simple_payback_yr=round(e["simple_payback_yr"], 1) if math.isfinite(e["simple_payback_yr"]) else "",
             breakeven_capex_usd_per_kwh=round(e["breakeven_capex_usd_per_kwh"], 1),

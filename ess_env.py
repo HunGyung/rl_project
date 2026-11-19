@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+from economics import degradation_krw_per_dc_kwh
 from tariff_engine import tariff, price_parts
 
 
@@ -53,6 +54,7 @@ class ESSEnv:
         if self.power <= 0 or self.capacity <= 0:
             raise ValueError("Battery power and capacity must be positive")
         self.eta = math.sqrt(cfg["round_trip_efficiency"])
+        self.degradation_per_dc_kwh = degradation_krw_per_dc_kwh(cfg["duration_hours"], cfg["cycle_life"])
         self.floor = self.scale * cfg["contract_multiplier"] * cfg["demand_floor_fraction"]
         self.price_scale = max(max(v) for v in cfg["rates"].values()) + cfg["surcharge_per_kwh"]
 
@@ -105,7 +107,7 @@ class ESSEnv:
         increase = max(0, grid - self.peak) if measured else 0
         base_cost = price * load + c["demand_rate"] * base_increase
         cost = price * grid + c["demand_rate"] * increase
-        degradation = discharge * c["degradation_per_kwh"]
+        degradation = self.degradation_per_dc_kwh * discharge / self.eta
         penalty = clipped * c["clip_penalty_per_kwh"]
         if measured:
             self.base_peak = max(self.base_peak, load)

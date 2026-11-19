@@ -5,6 +5,7 @@ import math
 
 import numpy as np
 
+from economics import degradation_krw_per_dc_kwh
 from ess_env import dispatch
 from tariff_engine import month_index, price_parts, ratchet_history, tariff
 
@@ -25,6 +26,8 @@ class AnnualESSEnv:
         self.power = self.scale * cfg["power_fraction"]
         self.capacity = self.power * cfg["duration_hours"]
         self.eta = math.sqrt(cfg["round_trip_efficiency"])
+        # 방전 DC kWh당 사이클 열화비. 설비의 명목 지속시간 단가와 config의 사이클 수명으로 정한다.
+        self.degradation_per_dc_kwh = degradation_krw_per_dc_kwh(cfg["duration_hours"], cfg["cycle_life"])
         self.floor = self.scale * cfg["contract_multiplier"] * cfg["demand_floor_fraction"]
         self.price_scale = max(max(rates) for rates in cfg["rates"].values()) + cfg["surcharge_per_kwh"]
         self.tariffs = tuple(tariff(date, cfg) for date, _ in self.rows)
@@ -132,7 +135,7 @@ class AnnualESSEnv:
         rate = cfg["demand_rate"]
         base_demand = rate * (self.base_peak - (0 if first_hour else base_previous))
         demand = rate * (self.peak - (0 if first_hour else previous))
-        degradation = cfg["degradation_per_kwh"] * discharge
+        degradation = self.degradation_per_dc_kwh * discharge / self.eta   # 계통 방전(AC) ÷ 효율 = 배터리 DC
         clipped = abs(request - (charge - discharge))
         penalty = cfg["clip_penalty_per_kwh"] * clipped
         self.i += 1

@@ -18,11 +18,29 @@ class EconomicsTests(unittest.TestCase):
     def test_short_duration_uses_two_hour_price(self):
         self.assertEqual(eco.unit_costs(1.0), eco.unit_costs(2.0))
 
-    def test_no_replacement_when_calendar_life_exceeds_horizon(self):
+    def test_no_replacement_when_combined_life_exceeds_horizon(self):
         size = eco.Size(378.0, 756.0)
         result = eco.economics(size, 2e7, 10 * size.usable_kwh)
-        self.assertEqual(result["battery_life_yr"], eco.CALENDAR_LIFE)
+        self.assertAlmostEqual(result["battery_life_yr"], 1 / (10 / eco.CYCLE_LIFE + 1 / eco.CALENDAR_LIFE))
+        self.assertGreater(result["battery_life_yr"], 15)
         self.assertEqual(result["replacement_years"], [])
+
+    def test_cycle_and_calendar_ageing_add_up(self):
+        size = eco.Size(100.0, 200.0)
+        idle = eco.battery_life_yr(size, 0.0)
+        cycling = eco.battery_life_yr(size, 250 * size.usable_kwh)
+        self.assertEqual(idle, eco.CALENDAR_LIFE)
+        self.assertAlmostEqual(cycling, 1 / (250 / 3000 + 1 / 16))
+        result = eco.economics(size, 5e6, 250 * size.usable_kwh)
+        self.assertEqual(result["replacement_years"], [7, 14])
+
+    def test_degradation_rate_matches_cycle_part_of_replacement(self):
+        u = eco.unit_costs(4.0)
+        expected = (u["storage_block"] + u["storage_bos"]) * eco.USD_TO_KRW / (3000 * 0.8)
+        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0), expected)
+        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0), 107.1, delta=0.1)
+        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0, cycle_life=6000), 53.6, delta=0.1)
+        self.assertEqual(eco.degradation_krw_per_dc_kwh(1.0), eco.degradation_krw_per_dc_kwh(2.0))
 
     def test_ratio_matches_hand_calculation_without_replacement(self):
         size = eco.Size(100.0, 200.0)

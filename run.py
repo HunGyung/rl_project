@@ -223,6 +223,9 @@ def main():
     parser.add_argument("--eval-every", type=int, default=12, help="develop: validate every N monthly episodes and at the end")
     parser.add_argument("--power-percent", type=int, choices=POWER_PERCENTAGES, help="Run only this output percentage")
     parser.add_argument("--duration-hours", type=int, choices=DURATIONS_HOURS, help="Run only this duration")
+    parser.add_argument("--cycle-life", type=float,
+                        help="Sensitivity: cycles at 80%% DoD to end of life (default config.json 3000; "
+                             "PNNL 60%% end of life: 6000)")
     args = parser.parse_args()
     if args.episodes < 1:
         parser.error("--episodes must be positive")
@@ -233,6 +236,10 @@ def main():
     stage = STAGES[args.stage]
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     cfg["factory"] = args.factory
+    if args.cycle_life is not None:
+        if args.cycle_life <= 0:
+            parser.error("--cycle-life must be positive")
+        cfg["cycle_life"] = args.cycle_life
     data = args.data or ROOT / "data" / f"factory_{args.factory}_hourly_kwh_v3.csv"
     if not data.is_file():
         parser.error(f"Data file missing: {data}. See README.md.")
@@ -262,7 +269,8 @@ def main():
     grid = list(product((args.power_percent,) if args.power_percent is not None else POWER_PERCENTAGES,
                         (args.duration_hours,) if args.duration_hours is not None else DURATIONS_HOURS))
     out = args.output or ROOT / "outputs" / datetime.now().strftime(
-        f"{args.stage}_{args.factory}_%Y%m%d_%H%M%S_seed{args.seed}")
+        f"{args.stage}_{args.factory}_%Y%m%d_%H%M%S_seed{args.seed}"
+        + (f"_cycle{cfg['cycle_life']:g}" if args.cycle_life is not None else ""))
     out.mkdir(parents=True, exist_ok=False)
     metadata = dict(stage=args.stage, factory=args.factory, grid=grid, seed=args.seed, episodes=args.episodes,
                     eval_every=args.eval_every if args.stage == "develop" else None,
@@ -276,6 +284,9 @@ def main():
                     warmup_first_pass_opening=prior_opening_note,
                     model=("best checkpoint by 2013 steady net saving (excluding CAPEX)" if args.stage == "develop"
                            else "last model after the fixed number of episodes (no checkpoint selection)"),
+                    cycle_life=cfg["cycle_life"], calendar_life_years=cfg["calendar_life_years"],
+                    aging_model="1/life = cycles/cycle_life + 1/calendar_life; "
+                                "operation charges the cycle part per DC kWh",
                     train_max_kw=maximum, data_sha256=data_hash, replay_mode="per", n_step=1,
                     observation_timing="hour_start_completed_intervals_only",
                     soc_mask="upper_charge_lower_discharge", forecaster=forecaster.report,
@@ -296,9 +307,11 @@ def main():
         train_env.set_opening(train_env.as_previous_year(original_monthly_peaks(training, case_cfg)))
         evaluator = Evaluator(case_cfg, maximum, target_months, prior_months, prior_opening, forecast_at, limit_at)
         case_settings = dict(metadata, config=case_cfg, power_kw=train_env.power, capacity_kwh=train_env.capacity,
+                             degradation_krw_per_dc_kwh=train_env.degradation_per_dc_kwh,
                              observation_size=train_env.obs_dim, action_count=train_env.n_actions)
         save_settings(case_out, case_settings)
-        print(f"\n[{index}/{len(grid)}] {args.factory} {size} ({train_env.power:.1f} kW, {train_env.capacity:.1f} kWh)",
+        print(f"\n[{index}/{len(grid)}] {args.factory} {size} ({train_env.power:.1f} kW, {train_env.capacity:.1f} kWh, "
+              f"degradation {train_env.degradation_per_dc_kwh:.1f} KRW/DC kWh)",
               flush=True)
         annual, extra = run_case(case_out, train_env, evaluator, case_cfg, args, stage["label"])
         for scenario in SCENARIOS:
