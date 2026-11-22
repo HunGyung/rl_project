@@ -6,8 +6,11 @@
 
 평가 연도는 두 상황으로 계산한다.
   year1  : 그해 ESS를 설치. 원래 운영과 ESS 모두 직전 해 원래 운영의 피크 이력으로 시작한다.
-  steady : 2년차 이후(정상상태). ESS는 같은 정책을 직전 해에 돌려 얻은 자기 피크 이력으로 시작한다.
-           직전 해를 2회 예열 운전한다 (1회차는 직전 해의 앞 이력, 2회차는 1회차의 자기 피크로 시작).
+  steady : 2년차 이후(정상상태). 설치 후 평가 연도의 부하가 되풀이된다고 보고 3년차를 평가한다.
+           1회차는 year1과 같고, 2·3회차는 ESS가 직전 회차에 평가 연도에서 만든 자기 피크로 시작한다.
+           원래 운영도 평가 연도의 원래 피크를 이어받는다. 학습 연도에서 ESS가 낮춘 피크는 쓰지 않는다.
+
+금액은 설치비를 뺀 값이 아니라 연간 운영 순절감이다. 보고의 기준은 마지막 모델(시드 평균과 범위)이다.
 """
 import argparse
 import csv
@@ -88,40 +91,27 @@ def run_policy(env, policy, model=None, limits=None):
 
 
 class Evaluator:
-    """한 설비 · 한 평가 연도의 year1 / steady 평가. 직전 해는 steady 이력을 만드는 예열 운전에만 쓴다."""
+    """한 설비 · 한 평가 연도의 year1 / steady 평가.
 
-    def __init__(self, cfg, maximum, target_months, prior_months, prior_opening, forecast_at, limit_at,
-                 passes=WARMUP_PASSES):
+    직전 해는 설치 시점의 원래 피크로만 쓴다. steady는 설치 첫해부터 평가 연도를 되풀이하므로,
+    모델이 학습 연도에서 외운 피크 절감이 평가 성적에 들어가지 않는다."""
+
+    def __init__(self, cfg, maximum, target_months, prior_months, forecast_at, limit_at, passes=WARMUP_PASSES):
         self.prior_peaks = original_monthly_peaks(prior_months, cfg)
-        self.prior_opening, self.passes = prior_opening, passes
-
-        def build(months, opening=None):
-            dates = [date for date, _ in flat(months)]
-            env = AnnualESSEnv(months, cfg, maximum, [forecast_at[d] for d in dates], opening)
-            return env, [limit_at[d] for d in dates]
-
-        self.target_env, self.limits = build(target_months, self.prior_peaks)
-        self.prior_env, self.prior_limits = build(prior_months)
-        if prior_opening is None:
-            # 직전 해 앞의 실제 이력이 없으면 직전 해 원래 피크를 한 해 앞으로 옮겨 1회차 예열의 시작 이력으로 쓴다.
-            self.prior_opening = self.prior_env.as_previous_year(self.prior_peaks)
-
-    def steady_opening(self, policy, model=None):
-        """같은 정책을 직전 해에 예열 운전해 얻은 ESS 월 피크."""
-        env = self.prior_env
-        env.set_opening(self.prior_opening)
-        for index in range(self.passes):
-            if index:
-                env.roll_over()
-            run_policy(env, policy, model, self.prior_limits)
-        return env.ess_peaks()
+        self.passes = passes
+        dates = [date for date, _ in flat(target_months)]
+        self.target_env = AnnualESSEnv(target_months, cfg, maximum, [forecast_at[d] for d in dates], self.prior_peaks)
+        self.limits = [limit_at[d] for d in dates]
 
     def run(self, scenario, policy, model=None):
         env = self.target_env
         if scenario == "year1":
             env.set_opening(self.prior_peaks)
         elif scenario == "steady":
-            env.set_opening(self.prior_peaks, self.steady_opening(policy, model))
+            env.set_opening(self.prior_peaks)   # 1회차 = 설치 첫해
+            for _ in range(self.passes):
+                run_policy(env, policy, model, self.limits)
+                env.roll_over()         # 이번 회차의 원래 · ESS 피크가 다음 회차의 직전 해 이력이 된다
         else:
             raise ValueError(f"Unknown scenario: {scenario}")
         return run_policy(env, policy, model, self.limits)
@@ -151,7 +141,7 @@ class Evaluator:
 
 def annual_rows(summaries):
     fields = ("base_bill_won", "bill_won", "demand_saving_won", "energy_saving_won", "degradation_won",
-              "settlement_won", "charge_kwh", "discharge_kwh")
+              "settlement_won", "charge_kwh", "discharge_kwh", "clipped_steps")
     rows = []
     for scenario in SCENARIOS:
         for policy in ("original", *POLICIES):
@@ -226,8 +216,8 @@ def main():
     parser.add_argument("--power-percent", type=int, choices=POWER_PERCENTAGES, help="Run only this output percentage")
     parser.add_argument("--duration-hours", type=int, choices=DURATIONS_HOURS, help="Run only this duration")
     parser.add_argument("--cycle-life", type=float,
-                        help="Sensitivity: cycles at 80%% DoD to end of life (default config.json 3000; "
-                             "PNNL 60%% end of life: 6000)")
+                        help="Cycle life scenario (default config.json 5250 = PNNL 4,200 full-depth cycles / 0.8; "
+                             "conservative replacement at 80%% capacity: 2400)")
     args = parser.parse_args()
     if args.episodes is None:
         args.episodes = STAGES[args.stage]["episodes"]
@@ -263,18 +253,11 @@ def main():
 
     prior_year = evaluate_year - 1
     target_months, prior_months = by_year(evaluate_year), by_year(prior_year)
-    if prior_year - 1 in years:
-        prior_opening = original_monthly_peaks(by_year(prior_year - 1), cfg)
-        prior_opening_note = f"{prior_year - 1} original peaks"
-    else:
-        prior_opening = None
-        prior_opening_note = f"{prior_year} original peaks shifted one year earlier (no earlier data)"
 
     grid = list(product((args.power_percent,) if args.power_percent is not None else POWER_PERCENTAGES,
                         (args.duration_hours,) if args.duration_hours is not None else DURATIONS_HOURS))
     out = args.output or ROOT / "outputs" / datetime.now().strftime(
-        f"{args.stage}_{args.factory}_%Y%m%d_%H%M%S_seed{args.seed}"
-        + (f"_cycle{cfg['cycle_life']:g}" if args.cycle_life is not None else ""))
+        f"{args.stage}_{args.factory}_%Y%m%d_%H%M%S_seed{args.seed}_cycle{cfg['cycle_life']:g}")
     out.mkdir(parents=True, exist_ok=False)
     metadata = dict(stage=args.stage, factory=args.factory, grid=grid, seed=args.seed, episodes=args.episodes,
                     eval_every=args.eval_every if args.stage == "develop" else None,
@@ -283,11 +266,14 @@ def main():
                     training_opening_peak_history="pass 1: training-data original peaks shifted before the data; "
                                                   "later passes: previous pass's own peaks",
                     scenarios=dict(year1=f"ESS installed in {evaluate_year}; every policy opens with {prior_year} original peaks",
-                                   steady=f"ESS opens with its own {prior_year} peaks from {WARMUP_PASSES} warm-up passes "
-                                          f"over {prior_year}; original operation opens with {prior_year} original peaks"),
-                    warmup_first_pass_opening=prior_opening_note,
-                    model=("best checkpoint by 2013 steady net saving (excluding CAPEX)" if args.stage == "develop"
+                                   steady=f"third year after installation with {evaluate_year} load repeated: pass 1 equals "
+                                          f"year1, later passes open with the ESS peaks of the previous {evaluate_year} "
+                                          f"pass; original operation inherits {evaluate_year} original peaks; "
+                                          "ESS peaks from training years are not used"),
+                    model=("report last model; best checkpoint by 2013 steady net saving is reference only"
+                           if args.stage == "develop"
                            else "last model after the fixed number of episodes (no checkpoint selection)"),
+                    money_basis="annual operating net saving, excluding CAPEX and fixed O&M",
                     cycle_life=cfg["cycle_life"], calendar_life_years=cfg["calendar_life_years"],
                     aging_model="1/life = cycles/cycle_life + 1/calendar_life; "
                                 "operation charges the cycle part per DC kWh",
@@ -309,7 +295,7 @@ def main():
         case_cfg = dict(cfg, power_fraction=power / 100, duration_hours=hours)
         train_env = AnnualESSEnv(training, case_cfg, maximum, [forecast_at[d] for d, _ in flat(training)])
         train_env.set_opening(train_env.as_previous_year(original_monthly_peaks(training, case_cfg)))
-        evaluator = Evaluator(case_cfg, maximum, target_months, prior_months, prior_opening, forecast_at, limit_at)
+        evaluator = Evaluator(case_cfg, maximum, target_months, prior_months, forecast_at, limit_at)
         case_settings = dict(metadata, config=case_cfg, power_kw=train_env.power, capacity_kwh=train_env.capacity,
                              degradation_krw_per_dc_kwh=train_env.degradation_per_dc_kwh,
                              observation_size=train_env.obs_dim, action_count=train_env.n_actions)
@@ -320,12 +306,16 @@ def main():
         annual, extra = run_case(case_out, train_env, evaluator, case_cfg, args, stage["label"])
         for scenario in SCENARIOS:
             nets = {row["policy"]: row["net_saving_won"] for row in annual if row["scenario"] == scenario}
+            # develop의 annual은 최고 체크포인트이므로 참고 열로 두고, 보고 기준은 항상 마지막 모델이다.
+            model_columns = (dict(rl_last_net_won=extra[scenario]["rl_last_net_won"], rl_best_net_won=nets["rl"],
+                                  best_episode=extra[scenario]["best_episode"])
+                             if args.stage == "develop" else dict(rl_last_net_won=nets["rl"]))
             results.append(dict(factory=args.factory, stage=args.stage, evaluate_year=evaluate_year,
                                 condition=size, scenario=scenario, power_percent=power, duration_hours=hours,
                                 power_kw=train_env.power, capacity_kwh=train_env.capacity, seed=args.seed,
-                                episodes=args.episodes, rl_net_won=nets["rl"],
+                                episodes=args.episodes, cycle_life=cfg["cycle_life"],
                                 rule_percentile_net_won=nets["rule_percentile"], rule_tou_net_won=nets["rule_tou"],
-                                original_net_won=nets["original"], **extra.get(scenario, {})))
+                                original_net_won=nets["original"], **model_columns))
         write_csv(out / "grid_summary.csv", results)
         save_settings(case_out, dict(case_settings, status="complete"))
     save_settings(out, dict(metadata, status="complete"))
@@ -344,6 +334,7 @@ def run_case(out, train_env, evaluator, cfg, args, label):
         torch.save(model.state_dict(), out / "last_model.pt")
         last_summaries, _ = evaluator.evaluate(model, policies=("rl",), collect_traces=False)
         write_csv(out / "last_validation_monthly.csv", last_summaries)
+        write_csv(out / "last_validation_annual.csv", annual_rows(last_summaries))
         for scenario in SCENARIOS:
             extra[scenario] = dict(best_episode=checkpoint.best_episode,
                                    rl_last_net_won=rl_net(last_summaries, scenario))
@@ -360,10 +351,14 @@ def run_case(out, train_env, evaluator, cfg, args, label):
     annual = annual_rows(summaries)
     write_csv(out / f"{label}_annual.csv", annual)
     for row in annual:
-        print(f"{row['scenario']:7s} {row['policy']:16s} bill savings={row['bill_saving_won']:>14,.0f} "
-              f"net savings={row['net_saving_won']:>14,.0f} KRW")
+        name = "rl_best(ref)" if args.stage == "develop" and row["policy"] == "rl" else row["policy"]
+        print(f"{row['scenario']:7s} {name:16s} bill savings={row['bill_saving_won']:>14,.0f} "
+              f"operating net (excl. CAPEX)={row['net_saving_won']:>14,.0f} KRW")
     if args.stage == "develop":
-        print(f"BEST model: episode {extra['steady']['best_episode']}. Last model saved separately.")
+        for scenario in SCENARIOS:
+            print(f"{scenario:7s} {'rl_last':16s} operating net (excl. CAPEX)="
+                  f"{extra[scenario]['rl_last_net_won']:>14,.0f} KRW")
+        print(f"Reference best checkpoint: episode {extra['steady']['best_episode']}. Report the last model.")
     return annual, extra
 
 

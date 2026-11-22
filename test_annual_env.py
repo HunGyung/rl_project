@@ -40,7 +40,7 @@ class AnnualRatchetTests(unittest.TestCase):
         self.assertAlmostEqual(february["demand_won"], january["grid_kw"] * 8320)
         self.assertGreater(february["settlement_won"], 0)
         summary = env.summary()
-        self.assertAlmostEqual(summary["reward_sum_won"], summary["net_saving_won"] - summary["penalty_won"])
+        self.assertAlmostEqual(summary["reward_sum_won"], summary["net_saving_won"])  # 벌점 없이 실제 비용만 보상
         # 열화비는 배터리에서 나간 DC 방전량 기준이다.
         self.assertAlmostEqual(january["degradation_won"],
                                env.degradation_per_dc_kwh * january["discharge_kw"] / env.eta)
@@ -106,6 +106,27 @@ class AnnualRatchetTests(unittest.TestCase):
         env = AnnualESSEnv(self.months, self.cfg, 120, [100, 50], {december: 150}, {december: 120})
         env.reset()
         self.assertEqual((env.base_peak, env.peak), (150, 120))
+
+    def test_remaining_time_means_the_same_for_one_and_two_year_data(self):
+        def hours(year, month, count):
+            return [(datetime(year, month, 1, hour), 100.0) for hour in range(count)]
+
+        def remaining(months, skip=0):
+            rows = sum(len(value) for value in months.values())
+            env = AnnualESSEnv(months, self.cfg, 120, [100.0] * rows)
+            state = env.reset()
+            for _ in range(skip):
+                state = env.step(2)[0]
+            values = [float(state[12])]
+            while env.i < rows - 1:
+                values.append(float(env.step(2)[0][12]))
+            return values
+
+        evaluation = {(2014, 7): hours(2014, 7, 4), (2014, 8): hours(2014, 8, 2)}
+        training = {(2012, 1): hours(2012, 1, 6), (2013, 7): hours(2013, 7, 4), (2013, 8): hours(2013, 8, 2)}
+        expected = [1.0, 0.75, 0.5, 0.25, 1.0, 0.5]
+        self.assertEqual(remaining(evaluation), expected)
+        self.assertEqual(remaining(training, skip=6), expected)
 
     def test_roll_over_uses_own_peaks_as_previous_year(self):
         env = self.env()

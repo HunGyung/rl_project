@@ -30,16 +30,24 @@ class EconomicsTests(unittest.TestCase):
         idle = eco.battery_life_yr(size, 0.0)
         cycling = eco.battery_life_yr(size, 250 * size.usable_kwh)
         self.assertEqual(idle, eco.CALENDAR_LIFE)
-        self.assertAlmostEqual(cycling, 1 / (250 / 3000 + 1 / 16))
+        self.assertAlmostEqual(cycling, 1 / (250 / 5250 + 1 / 16))
         result = eco.economics(size, 5e6, 250 * size.usable_kwh)
-        self.assertEqual(result["replacement_years"], [7, 14])
+        self.assertEqual(result["replacement_years"], [10])
+
+    def test_default_cycle_life_is_pnnl_full_depth_equivalent(self):
+        self.assertEqual(eco.CYCLE_LIFE * eco.DOD, 4200)
+        config = json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["cycle_life"], eco.CYCLE_LIFE)
+        self.assertNotIn("clip_penalty_per_kwh", config)
 
     def test_degradation_rate_matches_cycle_part_of_replacement(self):
         u = eco.unit_costs(4.0)
-        expected = (u["storage_block"] + u["storage_bos"]) * eco.USD_TO_KRW / (3000 * 0.8)
+        expected = (u["storage_block"] + u["storage_bos"]) * eco.USD_TO_KRW / 4200
         self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0), expected)
-        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0), 107.1, delta=0.1)
-        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0, cycle_life=6000), 53.6, delta=0.1)
+        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(2.0), 62.8, delta=0.1)
+        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0), 61.2, delta=0.1)
+        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(2.0, cycle_life=2400), 137.4, delta=0.1)
+        self.assertAlmostEqual(eco.degradation_krw_per_dc_kwh(4.0, cycle_life=2400), 133.9, delta=0.1)
         self.assertEqual(eco.degradation_krw_per_dc_kwh(1.0), eco.degradation_krw_per_dc_kwh(2.0))
 
     def test_ratio_matches_hand_calculation_without_replacement(self):
@@ -88,10 +96,28 @@ class EconomicsTests(unittest.TestCase):
                 w.writerow(dict(policy="original", bill_saving_won=0, net_saving_won=0, discharge_kwh=0))
                 w.writerow(dict(policy="rl", bill_saving_won=2e7, net_saving_won=1.9e7, discharge_kwh=6000))
             rows = case_rows(case)
-            self.assertEqual([r["policy"] for r in rows], ["rl"])
+            self.assertEqual([r["policy"] for r in rows], ["rl_best"])   # develop의 annual은 최고 체크포인트
             expected = eco.economics(eco.Size(378.0, 756.0), 2e7, 6000 / math.sqrt(0.83))
             self.assertAlmostEqual(rows[0]["breakeven_ratio"], round(expected["breakeven_ratio"], 4))
             self.assertAlmostEqual(rows[0]["usable_kwh"], 604.8)
+
+    def test_develop_economics_reports_last_model_as_rl(self):
+        fields = ["scenario", "policy", "bill_saving_won", "net_saving_won", "discharge_kwh"]
+        with tempfile.TemporaryDirectory() as tmp:
+            case = Path(tmp) / "p05_h2"
+            case.mkdir()
+            settings = dict(power_kw=378.0, capacity_kwh=756.0, config=dict(round_trip_efficiency=0.83))
+            (case / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+            for name, saving in (("validation_annual.csv", 3e7), ("last_validation_annual.csv", 1e7)):
+                with (case / name).open("w", encoding="utf-8-sig", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields)
+                    w.writeheader()
+                    for scenario in ("year1", "steady"):
+                        w.writerow(dict(scenario=scenario, policy="rl", bill_saving_won=saving,
+                                        net_saving_won=saving, discharge_kwh=6000))
+            rows = {r["policy"]: r for r in case_rows(case)}
+            self.assertEqual(rows["rl"]["bill_saving_won"], 10_000_000)
+            self.assertEqual(rows["rl_best"]["bill_saving_won"], 30_000_000)
 
 
 if __name__ == "__main__":

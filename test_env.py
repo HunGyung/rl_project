@@ -32,7 +32,7 @@ class EnvironmentTests(unittest.TestCase):
             self.assertLessEqual(info["discharge_kw"], env.power + 1e-9)
             self.assertAlmostEqual(info["grid_kw"], info["load_kw"] + info["charge_kw"] - info["discharge_kw"])
         summary = env.summary()
-        self.assertAlmostEqual(summary["reward_sum_won"], summary["net_saving_won"] - summary["penalty_won"], places=6)
+        self.assertAlmostEqual(summary["reward_sum_won"], summary["net_saving_won"], places=6)
         # 요금 계산을 시간별 증가분과 독립적으로 다시 계산한다.
         direct = sum(r["grid_kw"] * r["price"] for r in env.history)
         direct += self.cfg["demand_rate"] * max([env.floor] + [r["grid_kw"] for r in env.history if r["measured"]])

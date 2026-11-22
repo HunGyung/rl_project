@@ -108,7 +108,6 @@ class ESSEnv:
         base_cost = price * load + c["demand_rate"] * base_increase
         cost = price * grid + c["demand_rate"] * increase
         degradation = self.degradation_per_dc_kwh * discharge / self.eta
-        penalty = clipped * c["clip_penalty_per_kwh"]
         if measured:
             self.base_peak = max(self.base_peak, load)
             self.peak = max(self.peak, grid)
@@ -119,14 +118,14 @@ class ESSEnv:
         if done:
             offpeak_price = sum(price_parts(date, c, 0))
             settlement = max(0, c["initial_soc"] * self.capacity - self.energy) / self.eta * offpeak_price
-        reward_won = base_cost - cost - degradation - penalty - settlement
+        reward_won = base_cost - cost - degradation - settlement
         info = dict(timestamp=date.isoformat(), action=int(action), load_kw=load, grid_kw=grid,
                     requested_kw=request, charge_kw=charge, discharge_kw=discharge,
                     soc_before=before / self.capacity, soc=self.energy / self.capacity,
                     peak_kw=self.peak, base_peak_kw=self.base_peak, price=price,
                     measured=int(measured), clipped_kw=clipped,
                     base_energy_won=price * load, energy_won=price * grid,
-                    degradation_won=degradation, penalty_won=penalty,
+                    degradation_won=degradation,
                     settlement_won=settlement, reward_won=reward_won)
         self.history.append(info)
         return self.observation(), reward_won / c["reward_scale"], done, info
@@ -139,11 +138,10 @@ class ESSEnv:
         saving = base_energy + base_demand - energy - demand
         degradation = sum(r["degradation_won"] for r in h)
         settlement = sum(r["settlement_won"] for r in h)
-        penalty = sum(r["penalty_won"] for r in h)
         return dict(base_bill_won=base_energy + base_demand, bill_won=energy + demand,
                     energy_saving_won=base_energy - energy, demand_saving_won=base_demand - demand,
                     bill_saving_won=saving, degradation_won=degradation,
-                    settlement_won=settlement, penalty_won=penalty,
+                    settlement_won=settlement,
                     net_saving_won=saving - degradation - settlement,
                     reward_sum_won=sum(r["reward_won"] for r in h),
                     clipped_steps=sum(r["clipped_kw"] > 1e-8 for r in h),

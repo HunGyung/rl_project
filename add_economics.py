@@ -5,6 +5,7 @@
 칸 폴더(p03_h1 …)마다 settings.json(power_kw, capacity_kwh)과 연간 결과를 읽어
 정책별로 economics.economics()를 계산하고 <run 폴더>/grid_economics.csv로 저장한다.
   develop 실행 → validation_annual.csv (2013),  final 실행 → test_annual.csv (2014)
+  정책 rl = 보고 기준인 마지막 모델. develop의 최고 체크포인트는 rl_best(참고)로 따로 적는다.
   1년차 = year1 요금 절감, 2~15년차 = steady 요금 절감 (scenario 열이 없는 이전 결과는 한 값을 모든 해에 쓴다)
 
 입력 규칙 (economics.py 맨 위 가정 참고)
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import economics as eco
 
-POLICIES = ("rule_tou", "rule_percentile", "rl")
+POLICIES = ("rule_tou", "rule_percentile", "rl", "rl_best")
 
 
 def read_csv(path):
@@ -38,16 +39,30 @@ def annual_file(case_dir: Path) -> Path | None:
     return next((case_dir / name for name in ANNUAL_FILES if (case_dir / name).exists()), None)
 
 
+def annual_by_policy(case_dir: Path) -> dict:
+    """{정책: {상황: 연간 행}}. develop의 validation_annual의 rl은 최고 체크포인트라 rl_best로 구분한다."""
+    path = annual_file(case_dir)
+    is_develop = path.name == "validation_annual.csv"
+    by_policy = {}
+    for r in read_csv(path):
+        policy = "rl_best" if is_develop and r["policy"] == "rl" else r["policy"]
+        if policy in POLICIES:
+            by_policy.setdefault(policy, {})[r.get("scenario") or "steady"] = r
+    last = case_dir / "last_validation_annual.csv"
+    if is_develop and last.exists():
+        for r in read_csv(last):
+            if r["policy"] == "rl":
+                by_policy.setdefault("rl", {})[r.get("scenario") or "steady"] = r
+    return by_policy
+
+
 def case_rows(case_dir: Path) -> list[dict]:
     settings = json.loads((case_dir / "settings.json").read_text(encoding="utf-8"))
     size = eco.size_from_run(settings["power_kw"], settings["capacity_kwh"])
     rte = settings["config"]["round_trip_efficiency"]
     cycle_life = settings["config"].get("cycle_life", eco.CYCLE_LIFE)
     calendar_life = settings["config"].get("calendar_life_years", eco.CALENDAR_LIFE)
-    by_policy = {}
-    for r in read_csv(annual_file(case_dir)):
-        if r["policy"] in POLICIES:
-            by_policy.setdefault(r["policy"], {})[r.get("scenario") or "steady"] = r
+    by_policy = annual_by_policy(case_dir)
     rows = []
     for policy in POLICIES:
         if policy not in by_policy:
