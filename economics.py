@@ -10,7 +10,9 @@
 가정:
   - 1 MW 단가를 우리 kW · kWh에 비례 적용한다 (소형 설비 할증 없음 → 설치비를 낮게 본 쪽)
   - 단가 보간 축은 명목 지속시간(명목 kWh ÷ kW). 2h 미만은 2h 단가, 10h 초과는 10h 단가
-  - 할인율 5%, 15년, 잔존가치 0, 환율 2021 연평균 1,144.4원/$
+  - 할인율 5%, 15년, 환율 2021 연평균 1,144.4원/$
+  - 15년 말 잔존가치 = 교체비 × 마지막 배터리의 남은 수명 ÷ 수명 (선형). 실제 중고 판매가가 아니라
+    사용한 수명만큼만 비용으로 계산하기 위한 가정이다. 저장 블록 + BOS에만 적용한다.
   - 배터리 노화는 설치비(0년)와 실제 교체 연도의 교체비로만 반영한다.
     시뮬레이션의 열화비(degradation_won)를 절감액에서 또 빼면 이중 계산이 된다 → 입력은 bill_saving_won
   - 노화 모델은 운전과 같다: 1년 노화 = 연간 사이클 ÷ 사이클 수명 + 1 ÷ 캘린더 수명 (두 몫을 더함).
@@ -127,7 +129,8 @@ def economics(size: Size, annual_bill_saving_krw: float, annual_discharge_dc_kwh
     annual_bill_saving_krw     : 2년차 이후(정상상태, steady) 연간 요금 절감 → 2~15년차
     first_year_bill_saving_krw : 설치 첫해(year1) 요금 절감 → 1년차. 생략하면 정상상태 값을 쓴다.
       첫해에는 설치 전 원래 운영의 피크가 래칫으로 남아 기본요금 절감이 줄어든다.
-    현금흐름: 0년 −설치비 / 매년 +요금 절감 − 고정 O&M / 교체 연도 −교체비(저장 블록 + BOS) / 마지막 해 −폐기비
+    현금흐름: 0년 −설치비 / 매년 +요금 절감 − 고정 O&M / 교체 연도 −교체비(저장 블록 + BOS)
+              / 마지막 해 +배터리 잔존가치 − 폐기비
     본전 설치비율 = Σ 현금흐름 현재가치 ÷ 설치비 (1 이상이면 NPV 양수)
     손익분기 설치비 = Σ 현금흐름 현재가치 ÷ 명목 kWh ($/kWh) — 설치비가 이 값 이하면 본전"""
     u = unit_costs(size.nominal_hours, year)
@@ -139,12 +142,14 @@ def economics(size: Size, annual_bill_saving_krw: float, annual_discharge_dc_kwh
     while n * life < years:
         repl_years.append(math.ceil(n * life))
         n += 1
+    residual_share = max(0.0, 1 - (years - max(repl_years, default=0)) / life)
+    residual = repl * residual_share
     flows = []
     first = annual_bill_saving_krw if first_year_bill_saving_krw is None else first_year_bill_saving_krw
     for t in range(1, years + 1):
         cf = (first if t == 1 else annual_bill_saving_krw) - fom - repl * repl_years.count(t)
         if t == years:
-            cf -= u["recycle"] * size.nominal_kwh * fx
+            cf += residual - u["recycle"] * size.nominal_kwh * fx
         flows.append(cf)
     pv = sum(cf / (1 + discount) ** t for t, cf in enumerate(flows, start=1))
     return dict(capex_krw=cap, annual_fixed_om_krw=fom, pv_net_flows_krw=pv, npv_krw=pv - cap,
@@ -153,4 +158,5 @@ def economics(size: Size, annual_bill_saving_krw: float, annual_discharge_dc_kwh
                 pnnl_capex_usd_per_kwh=cap / fx / size.nominal_kwh,
                 # 단순 회수기간은 정상상태 절감 기준
                 simple_payback_yr=cap / (annual_bill_saving_krw - fom) if annual_bill_saving_krw > fom else math.inf,
-                payback_yr=payback(cap, flows), battery_life_yr=life, replacement_years=repl_years)
+                payback_yr=payback(cap, flows), battery_life_yr=life, replacement_years=repl_years,
+                residual_value_krw=residual, residual_life_share=residual_share)

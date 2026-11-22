@@ -85,7 +85,9 @@ def case_rows(case_dir: Path) -> list[dict]:
             simple_payback_yr=round(e["simple_payback_yr"], 1) if math.isfinite(e["simple_payback_yr"]) else "",
             breakeven_capex_usd_per_kwh=round(e["breakeven_capex_usd_per_kwh"], 1),
             pnnl_capex_usd_per_kwh=round(e["pnnl_capex_usd_per_kwh"], 1),
-            battery_life_yr=round(e["battery_life_yr"], 1)))
+            battery_life_yr=round(e["battery_life_yr"], 1),
+            replacement_years=" ".join(str(year) for year in e["replacement_years"]),
+            residual_value_won=round(e["residual_value_krw"])))
     return rows
 
 

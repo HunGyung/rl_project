@@ -59,7 +59,26 @@ class EconomicsTests(unittest.TestCase):
         fom = u["fom"] * 100 * eco.USD_TO_KRW
         pv = sum((saving - fom) / 1.05 ** t for t in range(1, 16))
         pv -= u["recycle"] * 200 * eco.USD_TO_KRW / 1.05 ** 15
+        replacement = (u["storage_block"] + u["storage_bos"]) * 200 * eco.USD_TO_KRW
+        pv += replacement * (1 - 15 / 16) / 1.05 ** 15
         self.assertAlmostEqual(result["breakeven_ratio"], pv / cap, places=9)
+
+    def test_residual_is_replacement_cost_times_remaining_life(self):
+        size = eco.Size(100.0, 200.0)
+        result = eco.economics(size, 5e6, 250 * size.usable_kwh)
+        u = eco.unit_costs(2.0)
+        replacement = (u["storage_block"] + u["storage_bos"]) * 200 * eco.USD_TO_KRW
+        share = 1 - (15 - 10) / result["battery_life_yr"]
+        self.assertEqual(result["replacement_years"], [10])
+        self.assertAlmostEqual(result["residual_life_share"], share)
+        self.assertAlmostEqual(result["residual_value_krw"], replacement * share)
+
+    def test_residual_removes_replacement_cliff_at_project_end(self):
+        size = eco.Size(377.713, 755.426)
+        before = eco.economics(size, 1e7, 21 * size.usable_kwh)
+        after = eco.economics(size, 1e7, 22 * size.usable_kwh)
+        self.assertEqual((before["replacement_years"], after["replacement_years"]), ([], [15]))
+        self.assertAlmostEqual(before["breakeven_ratio"], after["breakeven_ratio"], delta=0.005)
 
     def test_first_year_saving_only_changes_year_one(self):
         size = eco.Size(100.0, 200.0)
